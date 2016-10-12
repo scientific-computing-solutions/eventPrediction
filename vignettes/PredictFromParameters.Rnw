@@ -1,0 +1,487 @@
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{fullpage}
+\title{Predict from Parameters}
+\author{Daniel Dalevi, Nik Burkoff and Helen Mann}
+% \VignetteIndexEntry{Predict from Parameters}
+%\VignetteEngine{knitr::knitr} 
+
+\begin{document}
+%\SweaveOpts{concordance=TRUE}
+
+<<l1,include=FALSE>>=
+library(knitr)
+opts_chunk$set(
+concordance=TRUE
+)
+@
+
+\maketitle
+
+\section{Introduction}
+This is a tutorial describing how to use the \emph{predict from parameters} part of the eventPrediction package.  
+The user enters the expected properties of a two (or possibly one) arm survival study and the package can calculate:
+\begin{itemize}
+\item The time when a given number of events is expected to occur.
+\item The expected number of events that will have occurred at a given time.
+\item For two arm studies: calculate the required number of events for testing $H_0: \ln(HR)=0$ for a given study power and significance level and output the time at which this `critical' number of events is expected to occur.  
+\end{itemize}
+
+The package handles studies with either exponential or Weibull survival functions and a lag can be included (i.e. a piecewise proportional hazard model with two `pieces'). Subjects can be followed for a fixed period or until study closure. A competing-risks model further allows subjects to drop out before having events. A parameter $k$ controls the non-linearity of subject accrual with $k=1$ uniform accrual, $k<1$ factor recruitment at start then slower and $k>1$ slow recruitment at start then faster. There will be a distinction made between Oncology and CRGI studies. The latter is an abbreviation for Cardio Renal and GastroIntestinal but in general these refer to larger studies with lower events rates. 
+
+\section{Preliminary steps}
+Before starting this tutorial you need to install the eventPrediction package and its dependencies. For all examples below, ensure you load the library first. 
+<<load,message=FALSE>>=
+library(eventPrediction)
+@ 
+
+\section{A Simple Example}
+
+The following sequence of commands are used for all analyses: 
+\begin{enumerate}
+\item Define a study object containing the study parameter values you wish to use.
+There are two different ways to create the study object. The first, \texttt{Study}, is used for oncology trials and the second, \texttt{CRGIStudy}, is used for CRGI trials. The main difference between the two is the way the event rates are specified. Median survival has little meaning for trials with low event rates.
+<<>>=
+#oncology trial 
+study <- Study( 
+            alpha = 0.05, 
+            power = 0.89, 
+            HR = 0.75, 
+            r = 1, 
+            N = 800, 
+            study.duration = 36,
+            ctrl.median = 3, 
+            k = 2,
+            acc.period = 20,
+            two.sided = TRUE)
+@
+
+
+The parameters are explained in Table~\ref{table:studyparams}.
+
+\begin{table}
+\caption{Parameters required for the study object.}
+\centering
+\begin{tabular}{|l|p{9cm}|}
+\hline
+Parameter & Description \\
+\hline
+HR & The assumed (i.e.\ targeted) hazard ratio between the subjects on the Experimental and Control arms.\\
+alpha & Significance level of the test for calculating the critical number of events
+$\alpha\in(0,1)$ (see also two.sided). \\
+power & Power, $(1-\beta)\in(0,1)$ the power we would like the study to have, this is used when calculating 
+the critical number of events.\\
+r & Experimental/Control randomization balance is given by 1:r, i.e.\ nE/nC=r; for example r=1 gives a balanced study and
+r = 0.5 implies twice as many subjects on the control arm etc. Specifically \texttt{floor(N*(r/(r+1)))} subjects are 
+allocated to the experimental arm and all other subjects are allocated to the control arm.\\
+N & Total number of subjects to be recruited. \\
+study.duration & Length of the study [months] $=S$ in this tutorial. \\
+ctrl.median  & Oncology only: Median survival time, i.e.\ the time by which half of the subjects in the control arm are expected to have had an event. \\
+ctrl.time  & CRGI only: At time=ctrl.time, ctrl.proportion of subjects have had an event.\\
+ctrl.proportion  & CRGI only: At time=ctrl.time, ctrl.proportion of subjects have had an event.\\
+follow up  & CRGI only: The length of time [months] a subject is followed after randomization. If subjects are followed until they have an event (or are censored at the end of study) then set this to \texttt{Inf}. \\ 
+k & Non-uniformity of accrual (integer, 1=uniform). We 
+    use the following distribution for the probability of a patient entering the trial at time $b$ 
+    within the accrual period $[0,B]$: $F(b)=b^k/B^k$; $f(b)=k b^{k-1}/B^k$ where $k>0$. $k=1$ indicates uniform accrual. This implies that during 
+    the first half of the accrual period, $1/2^k$ of the patients will be recruited. Half of the patients 
+    will be recruited by time $B/2^{1/k}$. \\
+acc.period & Accrual period [months] $=B$ in this tutorial. \\
+two.sided & If TRUE, two sided test will be used (i.e.\ alpha/2). \\
+shape & The Weibull shape parameter, default = 1 i.e.\ exponential survival function $=a$ in this tutorial; see examples below for further details. \\
+dropout & If \texttt{NULL} then no subjects drop out. Otherwise there is a competing risk model with the risks being event and drop out. The dropout argument should be a list with time, proportion (and optionally shape) as elements. For example \texttt{dropout=list(time=12,proportion=c(0.05,0.01), 
+shape=1.2))} would imply [in the absence of events] it is expected that 5\% of control arm subjects and 1\% of active arm subjects would drop out within 12 months and the drop out hazard function is Weibull with shape=1.2. If shape argument is not included then an exponential drop out rate is used.  \\ 
+lag.settings & A \texttt{LaggedEffect} object which captures any lag in treatment effect. See below for further details. \\
+\hline
+\end{tabular}
+\label{table:studyparams}
+\end{table}
+
+<<>>=
+#CRGI trial
+crgistudy <- CRGIStudy(
+            alpha = 0.05, 
+            power = 0.89, 
+            HR = 0.75, 
+            r = 1, 
+            N = 800, 
+            study.duration = 36,
+            ctrl.time = 12,
+            ctrl.proportion = 0.33,
+            followup = 24,
+            k = 2,
+            acc.period = 20,
+            two.sided = TRUE,
+            dropout=list(time=12,proportion=c(0.05,0.01)))
+@
+
+\item Use the predict function to execute the computations.
+In this example we would like to predict the expected number of events to have occurred at 15 months and the times at which 100 and 400 events are expected to occur. The \texttt{time.pred} and \texttt{event.pred} optional arguments are used to perform the prediction: 
+<<>>=
+prediction <- predict(study, time.pred=15, event.pred=c(100,400)) 
+@
+
+\item Output the results. The object returned contains the results and a summary can be output:
+<<>>=
+summary(prediction)
+@
+The \texttt{options} argument can be used to format the output (for example \texttt{summary(prediction, options=DisplayOptions(text.width=100))} see the Appendix for further details). 
+
+
+\item You may visualise the results using the plot command. The expected time of the critical number of events is marked with a solid vertical line and the predicted times and number of events are shown with dotted vertical lines (and coloured horizontal lines for each arm at these times).
+<<>>=
+plot(prediction, options = DisplayOptions(StartDate="15/01/2010"), 
+     show.title=FALSE)
+@
+
+The summary text can be output onto the graph by setting \texttt{show.title=TRUE}. The optional \texttt{options} argument can once again be used to format the output of both the summary text and the graph itself. See the Appendix for further details.
+
+The resolution of the plots (interval between the x co-ordinates of consecutive plotted data points) is set by the \texttt{step.size} argument to the predict function, by default it is set at 0.1.
+
+Finally the \texttt{show.separate.arms} argument to the \texttt{plot} function can be set to \texttt{FALSE}, in which case the blue and red lines of each arm are not displayed.
+
+\end{enumerate}            
+
+\section{Further Details}
+
+More details concerning the results can be viewed using the \texttt{print} function:
+<<print>>=
+print(prediction)
+@
+The study definition is first output followed by two data frames containing data for the requested predictions (\texttt{prediction@predict.data}) and the critical number of events (\texttt{prediction@critical.data})\footnote{A third data frame (\texttt{prediction@grid}) is not shown but contains the data for plotting the results and does not contain the at risk columns.}.
+
+The data frames contain the following columns:
+\begin{itemize}
+\item \texttt{time} the time since study start for this row of the data frame
+\item \texttt{events1} the expected number of events on the control arm at this time
+\item \texttt{events2}  the expected number of events on the experimental arm at this time
+\item \texttt{events.tot} sum of columns \texttt{events1} and \texttt{events2}
+\item \texttt{recruit.tot} the expected number of subjects recruited onto the study by this time
+\item \texttt{rounded.events.tot} contains the result of \texttt{floor(events1)+floor(events2)} 
+\item \texttt{time.pred} TRUE if this row refers to a time.pred user input or FALSE if it refers to an event.pred user input 
+\item \texttt{at.risk1} the amount of time control arm subjects have been at risk on the study by this time
+\item \texttt{at.risk2} the amount of time experimental arm subjects have been at risk on the study by this time
+\item \texttt{atrisk.tot} sum of columns \texttt{atrisk1} and \texttt{atrisk2} 
+\end{itemize}
+
+
+The critical number of events to reject the null hypothesis $H_0: \ln(HR)=0$, is defined as $$E =\left[\frac{(r+1)(z_{1-\alpha} + z_{1-\beta})}{\sqrt r \ln(HR)}\right]^2 $$ where $r$ is the allocation ratio (study@r), $1-\beta=$ study@power, $\alpha =$ study@alpha if study is one tailed or study@alpha/2 if two tailed, HR=study@HR and $z$ is the quantile function for the standard normal distribution.  
+
+Many assumptions are used in order to derive this formula and we strongly recommend consulting the non-proportional hazards package documentation and the literature (e.g.\ Sample Sizes for Clinical Trials, Steven A.\ Julious p248-252 and references therein) when using this formula.
+
+The critical hazard ratio is then defined as the HR with 50\% power when $E$ events occur\footnote{equivalently the HR with upper CI limit equal to 1}. By rearranging the above formula (and assuming we are interested in the case HR $<$ 1) the critical hazard ratio is defined as $$\exp\left(\frac{-(r+1)(z_{1-\alpha} + z_{0.5})}{\sqrt{rE}}\right).$$ 
+
+
+\subsection{\LaTeX\ Survival Function}
+
+It is possible to output the survival functions in \LaTeX\ which could then be incorporated into a report:
+<<latex>>=
+myLatexString <- LatexSurvivalFn(prediction)
+
+cat(myLatexString)
+@
+
+Note that the backslash character has been escaped in order for the latex to be correctly output when using \texttt{cat} or rendered using mathjax in the Shiny App. The \texttt{decimalplaces} argument (default 3) rounds the numeric values to the desired number of decimal places.
+
+\section{Single Arm Trial}
+
+The same procedure can be used for single arm trials, although it no longer makes sense to consider HR, randomization balance, the critical number of events etc. We use the \texttt{SingleArmStudy} function to create the Study object and a subset of the arguments to \texttt{Study} are required.
+<<singlearm>>=
+#Note drop out can be used in single arm studies as well
+singleArmStudy <- SingleArmStudy(N=800, 
+                                 study.duration=36,
+                                 ctrl.median=3,
+                                 k=1,
+                                 acc.period=20,
+                                 dropout=list(time=12,proportion=0.05,shape=1.2)) 
+
+ans <- predict(singleArmStudy,event.pred=c(100,200,400))
+@
+
+Similarly we can create a CRGI single arm study using the \texttt{SingleArmCRGIStudy} function:
+<<singlearmCRGI>>=
+crgisingleArm <- SingleArmCRGIStudy(N=800,
+                                    study.duration=45,
+                                    ctrl.time=12,
+                                    ctrl.proportion=0.3,
+                                    k=1,
+                                    acc.period=20,
+                                    followup=24)
+
+predict(crgisingleArm,event.pred=c(100,200,300))
+@
+
+Note that there are no events in the experimental arm (`events2' column). The \texttt{summary} and \texttt{plot} functions can also be used for single arm studies.
+
+\section{Example: NSCLC trial with PFS endpoint and Weibull survival function}
+
+Until now all studies have assumed exponential survival functions (i.e.\ $S(t) = \exp(-\lambda t)$ for some $\lambda$). The package also allows Weibull survival functions($S(t) = \exp(-(\lambda t)^a)$ for some $\lambda,a$) and these are used in the example below. 
+
+An NSCLC trial with primary endpoint progression free survival (PFS). This will be assessed in the total population and also the female subgroup. The control median PFS is estimated to be 3 months and the study will be designed to have 90\% power to detect a hazard ratio of 0.8, using a two-sided significance level of 2.44\%. Non-uniform recruitment will be assumed ($k=2$) with a recruitment period of 19 months. The shape parameter of the survival functions ($a$) will be set\footnote{In later versions the shape parameter will be able to be calculated from survival quantile data similarly to the non-proportional hazards package.} at 1.2.
+
+First you need to define a Study object with the above settings.
+<<>>=
+study <- Study( 
+            alpha = 0.0244, 
+            power = 0.9, 
+            HR = 0.8, 
+            r = 1, 
+            N = 1240, 
+            study.duration = 23,
+            ctrl.median = 3, 
+            k = 2,
+            acc.period = 19,
+            two.sided = TRUE,
+            shape=1.2) #Note the shape parameter
+@
+ 
+
+Run the following:
+<<>>=
+prediction <- predict(study)
+@
+
+The output for the total population:
+<<>>=
+summary(prediction)
+@
+
+With $1240$ patients the trial needs to be $21.5$ months to get the required number of events. The hazard ratio closest to $1$ that can be detected significantly is $0.86$. Plotting the results.
+<<>>=
+plot(prediction, show.title=FALSE)
+@ 
+
+Looking at the female only subgroup can be done by repeating the procedure with different parameters. The female subgroup is predicted to have a larger treatment difference, a hazard ratio of 1/1.375. Assuming a $1:1$ ratio of male:female subjects, the following settings can be made:
+<<>>=
+study <- Study( 
+            alpha = 0.0244, 
+            power = 0.9, 
+            HR = 1/1.375, 
+            r = 1, 
+            N = 620, 
+            study.duration = 23,
+            ctrl.median = 3, 
+            k = 2,
+            acc.period = 19,
+            two.sided = TRUE)
+@
+ 
+Then run:
+<<>>=
+prediction <- predict(study)
+text <- summary(prediction)
+@
+
+Finally we plot the results: 
+<<>>=
+plot(prediction, options=DisplayOptions(text.width=80))
+@ 
+
+
+\section{Including a lag time}
+\label{Sec:Lag}
+For trials which do not include a fixed follow up period, it is possible to include a lag time in the analysis using a piecewise proportional hazards model. Here some additional parameters are required (see Table~\ref{table:lagparams}): The lag time ($T$) and the hazard ratio and control median for the time period $[0,T]$. The hazard ratio and control median for time ($>T$) is taken from the \texttt{Study} object. 
+
+A lagEffect object is passed as the \texttt{lagged} argument into the \texttt{Study} object. Here is an example for illustrative purposes where we have a lag time of $3$ months during which the hazard is one, then it changes to $0.5$.
+<<lags>>=
+lagged <- LagEffect( 
+              Lag.T = 3, 
+              L.Ctr.median = 3,  
+              L.HazardRatio = 1)
+
+study <- Study(
+             alpha = 0.05,
+             power = 0.8,
+             HR = 0.5,
+             r = 1,
+             N = 800,
+             study.duration = 30,
+             ctrl.median = 3,
+             k = 2,
+             acc.period = 20,
+             two.sided = TRUE,
+             lag.settings=lagged)
+
+prediction <- predict(study)
+
+summary(prediction)
+@
+
+\begin{table}[!h]
+\centering
+\caption{Parameters required for running a simulation with lag. Note the hazard ratio and
+control median for after time T are taken from the study object. }
+\begin{tabular}{|l|p{9cm}|}
+\hline
+Parameter & Description \\
+\hline
+Lag.T & Lag time (months)\\
+L.Ctr.median & Control median for the time period $[0,T]$ \\
+L.HazardRatio & Hazard ratio for the time period $[0,T]$ \\
+study@ctrl.median & Control median for the time period $>T$ \\
+study@HR & Hazard ratio for the time period $>T$ \\
+\hline
+\end{tabular}
+\label{table:lagparams}
+\end{table}
+
+The formula for the average hazard ratio is described in the Appendix. Note that the critical number of events is calculated as if there was a study without lag which has this calculated average hazard ratio throughout.
+
+\section*{Appendix}
+
+\subsection*{Display Options}
+Here are some of the parameters that can be changed in the DisplayOptions object (default values in brackets):
+\begin{itemize}
+\item \texttt{Time} String displaying time units (``months").
+\item \texttt{Title} Title to be displayed in plot (``Expected Recruitment and Events").
+\item \texttt{StartDate} String, if ``0" integers will be enumerated (1,2,3,4...), if a date, e.g. ``15/01/2010", dates will be enumerated (``0").
+\item \texttt{Control} Plot legend text for control arm (``Control").
+\item \texttt{Exp} Plot legend text for experimental arm (``Experimental").
+\item \texttt{text.width} The text width for the summary text -- only used if the default title is used (75).
+\item \texttt{ShowRec} Add expected recruitment numbers to the summary text (FALSE).
+\end{itemize}
+
+\subsection*{Some notes on the event prediction using exponential survival and the R implementation}
+The survival time of an individual has cdf $F(t)$, survival function $S(t)=1-F(t)$ with the recruitment time $r$ having cdf $G(R)$ where $r \in [0,B]$. The probability of having an event by time $t$ is:
+\begin{equation}
+\label{eq:1}
+P(t) = \int^{\min(t,B)}_0 g(s) F(t-s) ds = G(\min(t,B)) - \int^{\min(t,B)}_0 g(s) S(t-s) ds
+\end{equation}
+
+The accrual model we implement is:
+\begin{equation}
+G(t) = \frac{t^k}{B^k}
+\end{equation}
+where $k$ determines the degree of uniformity. $k=1$ corresponds to uniform accrual $G(t)=t/B$. If, $t=0.5B$, half the recruitment time has passed and we have recruited $50\%$ of the patients $G(t)=0.5$. On the other hand, if $k=2$ then we have $G(t)=t^2/B^2$ and at half time we only have $G(t)=0.25$, i.e. $25\%$. 
+
+<<echo=FALSE,fig.height=5,fig.width=4>>=
+k=1
+B = 100
+t=1:B
+plot( t, 100*t^k/B^k, 'l', xlab="time [days]", ylab="G(t) [%]")
+text( 30, 35, "k=1" )
+k=2
+lines( t, 100*t^k/B^k,  col="red" )
+text( 40, 20, "k=2" )
+k=3
+lines( t, 100*t^k/B^k,  col="blue" )
+text( 47, 15, "k=3" )
+k=4
+lines( t, 100*t^k/B^k,  col="brown" )
+text( 54, 12, "k=4" )
+k=1/2
+lines( t, 100*t^k/B^k,  col="green" )
+text( 20, 50, "k=0.5" )
+abline( v=50 )
+abline( h=50, lty=2)
+abline( h=25, lty=2)
+abline( h=707, lty=2)
+abline( h=12.5, lty=2 )
+abline( h=6.25, lty=2 )
+@
+
+The survival function is assumed to be Weibull of the form:
+\begin{equation}
+S(t) = \exp(-(\lambda t)^a)
+\end{equation}
+with shape parameter $a$ and rate parameter $\lambda$ which differs between the experimental and placebo arms. A shape parameter $a=1$ implies an exponential survival function.
+
+Currently the user specifies $a$, the control median $ctrl.median$ ($M$) and the hazard ratio $HR$ ($\Delta$) in the study object. The conversion to rate parameters $\lambda$ is done using the relationships:
+
+\begin{equation}
+\lambda= 
+\begin{cases}
+    \log(2)^{1/a}/M, & \text{if control} \\ 
+    \log(2)^{1/a}/(M/\Delta^{1/a}), & \text{if experimental}
+\end{cases}
+\end{equation}
+(see function \texttt{eventPrediction::lambda.calc}).
+
+In order to calculate the probability of having an event at time $t$, we use Equation \ref{eq:1}:
+\begin{equation}
+\label{eq:2}
+P(t)=\frac{m^k}{B^k} - \frac{k}{B^k}\int^{m}_0 s^{k-1} S(t-s)ds
+\end{equation}
+where $m=\min(t,B)$. This integral is calculated using the \texttt{stats::integrate} R function within in the function \texttt{eventPrediction::events.integ}.
+
+In the integral, $S(t) = 1 -\mathbb{P}(\text{had event by time} \: t)$ which in the simple case of no fixed follow up period or competing risks is precisely the survival function. If subjects drop out then the function we are integrating  is no longer the survival function it is given by $$ 1 - \int_0^t J(u)h_e(u)du $$ where $h_e$ is the time dependent hazard function of having an event and $J$ is the survival function, i.e. the probability of still being in the trial as oppose to the probability of not having had an event \cite{Putter:2007}
+
+Similarly, if the study has a fixed follow up period of $\eta$ then the function used in the integral in Equation \ref{eq:2} ($S(.)$)  is unchanged for $t < \eta$ and $S(t)=S(\eta)$ for $t \ge \eta$ as after $\eta$ subject events are not included in the study. 
+
+\subsection*{Calculation of total time at risk}
+
+The expected total time at risk at time $t$ per subject, $R(t)$, is given as the sum of three terms (see end of vignette for derivations):
+
+$$ R(t) = I_1(t) + I_2(t) + I_3(t)$$
+
+where $I_1(t)$ is the total time spent at at risk for subjects still on the trial at time $t$, $I_2(t)$ is the total time spent at risk of subjects who have had an event/dropped out before time $t$ and $I_3(t)$ is the total time spent at risk for subjects completed, i.e. those who were censored at the end of the follow up period. If there is no fixed follow up period then $I_3(t) = 0$.
+
+We find
+$$I_1(t) = \int_0^{\min(t,B)} (t-s)J(t-s)g(s)ds,$$
+
+$$I_2(t) = \int_0^t \int_0^{\min(\tau,B)} (\tau -s)f(\tau - s)g(s)dsd\tau$$
+
+$$I_3(t) = J(\mathcal{F})G(\min(B,t-\mathcal{F},0))\mathcal{F}$$
+
+where $f(.)$ is the probability density function of having an event or dropping out, $J(.)$ is the survival function and $\mathcal{F}$ is the fixed follow up time.
+
+
+\subsection*{A note about the implementation of lag times}
+If there is a delay in response to treatment it is possible to include a lag time ($T$). This is achieved by using two models with different hazards in the time before and after $T$. That is, let interval $[0,T]$ have hazard $\Delta_{0T}$ and let $[T,S]$ have $\Delta_{TTS}$. The pieces are joined at $T$ 
+
+The predicted number of events curve is calculated using equation \ref{eq:1} with the appropriate survival functions, of the form:
+$$ S(t) = \begin{cases} \exp(-( \lambda_{ot} t)^ a ) & \quad \text{if } t \le T \\
+          \exp(-( \lambda_{tts} t)^ a )-( \lambda_{ot} ^ a - \lambda_{tts} ^ a )T^ a )  & \quad \text{if }  t > T\ \end{cases} $$ 
+
+
+For calculating the critical number of events an average hazard is computed. We follow the non-proportional hazard package\footnote{there are minor differences due differences in rounding when calculating $w_1$ and $w_2$} and define the average hazard ratio as:
+$$
+\hat{HR} = \exp \left( \frac{w_1\ln(\Delta_{ot}) + w_2\ln(\Delta_{tts})}{w_1+w_2}\right) 
+$$
+where $w_1$ is the number of subjects (both arms) who have an event within time T of being randomized on the trial and $w_2$ is the number of subjects (both arms) who have an event after being on the trial for time T and before the study concludes. 
+
+In earlier versions of the package an alternative definition of the average hazard ratio was used:
+\begin{equation}
+\hat{\lambda}_1 = \frac{p^1_{ot}+p^1_{tts}}{(p^1_{ot}/(\lambda^1_{ot})^a)+(p^1_{tts}/(\lambda^1_{tts})^a)} 
+\end{equation}
+\begin{equation}
+\hat{\lambda}_2 = \frac{p^2_{ot}+p^2_{tts}}{(p^2_{ot}/(\lambda^2_{ot})^a)+(p^2_{tts}/(\lambda^2_{tts})^a)} 
+\end{equation}
+\begin{equation}
+\hat{HR}          = \frac{ \hat{\lambda}_2 }{ \hat{\lambda}_1 }
+\end{equation}
+where $p^i_{ot}$ and $p^i_{tts}$ are the probabilities of having events between $[0,T]$ and $[T,S]$ in arm $i$, $a$ is the Weibull shape parameter ($=1$ in exponential case) and the $\lambda^i$ are the rate parameters before ($ot$) and after ($tts$) time T for arm $i$.
+
+\subsection*{Derivation of time at risk}
+
+\begin{eqnarray*}
+I_1(t) &=& \text{time at risk for subjects still on the trial at time} \; t \\
+      &=& \int_0^{\min(B,t)} \mathbb{P}(\text{still on trial at time} \; t | \text{recruited at time} \; s )\mathbb{P}(\text{recruited at time} \; s) \\
+      && \qquad \qquad \; (\text{time at risk}) dt \\
+       &=& \int_0^{\min(B,t)} J(t-s)g(s)(t-s)dt     
+\end{eqnarray*}       
+
+\begin{eqnarray*}
+I_2(t) &=& \text{time spent at risk for subjects who dropped out/had event before time} \; t \\
+&=& \int_0^t (\text{time spent at risk for subjects who dropped out/had event at time} \; \tau)   d\tau \\
+&=& \int_0^t \int_0^{\min(B,\tau)} \mathbb{P}(\text{event at time} \; \tau | \text{recruited at time} \; s) \\
+&& \qquad \qquad \qquad \; \mathbb{P}(\text{recruited at time}\; s)(\text{time at risk}) dsd\tau \\
+&=& \int_0^t \int_0^{\min(B,\tau)} f(\tau-s)g(s)(\tau -s ) dsd\tau
+\end{eqnarray*}
+
+If no followup then $I_3(t)=0$ otherwise:
+
+\begin{eqnarray*}
+I_3(t) &=& \text{time at risk for subjects censored at follow up before time} \; t\\
+&=& G(\min(B,t-\mathcal{F},0))J(\mathcal{F})\mathcal{F},
+\end{eqnarray*}
+
+where the first term is the probability of recruitment before time $t-\mathcal{F}$, the second term the probability of being censored at $\mathcal{F}$ and the third term ($\mathcal{F}$) is the time spent at risk on the study.
+
+\subsection*{References}
+\bibliographystyle{plain}
+\bibliography{eventPred}
+
+\end{document}
+

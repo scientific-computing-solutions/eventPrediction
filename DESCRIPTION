@@ -1,0 +1,58 @@
+Package: eventPrediction
+Type: Package
+Title: Event Prediction in Clinical Trials with Time-to-Event Outcomes
+Version: 2.4.1
+Date: 2015-11-24
+Author: Daniel Dalevi and Nik Burkoff with contributions from Helen Mann, Paul
+    Metcalfe and David Ruau
+Maintainer: Daniel Dalevi <daniel.dalevi@astrazeneca.com>
+Description: There are two main parts of this package: 1) Predictions about
+    the required number of events in a 2-arm survival study from a fixed set of
+    parameters, 2) Predictions about the time when reaching a target level of events
+    from accumulated data analysed at an interim in a blinded survival study. 1)
+    uses an exponential or Weibull model for survival and accrual according to a
+    fixed non linear function. 2) by default uses a Weibull model for survival and
+    either a Poisson process or a non-linear function for accrual. This package is
+    based on earlier work by Christophe Delong and Sally Hollis.
+License: GPL (>=2)
+Depends:
+    ggplot2,
+    survival,
+    methods,
+    scales,
+    R (>= 2.10)
+Imports:
+    mvtnorm,
+    stats
+Suggests:
+    knitr,
+    testthat
+VignetteBuilder: knitr
+Collate:
+    'timeInternal.R'
+    'simQOutput.R'
+    'common.R'
+    'fromDataInternal.R'
+    'eventPrediction_package.R'
+    'fromDataSimParam.R'
+    'eventData.R'
+    'accrual.R'
+    'ctrlSpec.R'
+    'singleSimDetails.R'
+    'longlagSettings.R'
+    'dataResults.R'
+    'displayOptions.R'
+    'eventDataDiagnostic.R'
+    'fromDataSimInternal.R'
+    'eventModel.R'
+    'fromParameterInternal.R'
+    'sfn.R'
+    'lag.R'
+    'study.R'
+    'results.R'
+    'fromParameterPlot.R'
+    'simulate.R'
+    'study_constructors.R'
+    'summaryText.R'
+    'system_tests.R'
+RoxygenNote: 5.0.1

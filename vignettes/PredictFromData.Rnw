@@ -1,0 +1,579 @@
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{fullpage}
+\title{Predict from data - Basic tutorial}
+\author{Daniel Dalevi and Nik Burkoff}
+% \VignetteIndexEntry{Predict from data - Basic tutorial}
+%\VignetteEngine{knitr::knitr} 
+
+\begin{document}
+\sloppy
+
+<<include=FALSE>>=
+library(knitr)
+opts_chunk$set(
+concordance=TRUE
+)
+@
+
+\maketitle
+
+\section{Introduction}
+This is a tutorial describing how to use the \emph{predict from data} functionality of the eventPrediction package (version $\ge 2.1.5$). The aim is to perform event predictions for time-to-event outcome clinical trials, specifically in oncology where the endpoint is either Overall Survival (OS) or Progression Free Survival (PFS), or Cardiovascular and Diabetes trials with composite endpoints. Accumulated data is analysed during an ongoing trial at an analysis date (a cutpoint in time where observations are censored). A survival model (by default Weibull) is fitted to the available data and is used to predict when patients (who have not had events) will have events. When studies are still recruiting, additional patients may be added stochastically or deterministically using a power law, a Poisson process or by defining your own sampling distribution. The aim is to predict when a required number of events will be reached (the target level), or the expected number of events at a given time.
+
+\section{Preliminary steps}
+Before starting this tutorial you will need to install the eventPrediction package and its dependencies. For all examples below, ensure you load the library first. 
+<<load,message=FALSE>>=
+library(eventPrediction)
+@
+
+\section{Loading the survival data}
+A simulated OS data set is used in this example to illustrate the required data format. The format is the same for CRGI/Diabetes but differs slightly for PFS where dthDate and progDate are used instead of the eventDate column. The OS data can be obtained by using the data-command. 
+
+<<>>=
+data(event.data)
+
+head(event.data)
+@
+
+The following three date formats are recognized by the package: `YYYY-MM-DD', `DD/MM/YYYY' and `DD Month YYYY'. The package also recognizes R's S3 Date class. The first step is to create an \texttt{EventData} object:
+<<>>=
+my.data <- EventData(data=event.data,
+                     subject="subject",
+                     rand.date="randDate",
+                     has.event="hasEvent",
+                     withdrawn="withdrawn",
+                     time="time",
+                     site="site", #optional
+                     event.type="eventType") #optional
+@
+
+
+The \texttt{data} argument is a data frame containing time-to-event data and the remaining arguments are the column names for: the subject identifier (\texttt{subject}); date of randomization onto trial (\texttt{rand.date}); whether the subject has had an event (\texttt{has.event} -- 1 if had event 0 otherwise); whether the subject has withdrawn from the trial (\texttt{withdrawn} -- 1 if withdrawn 0 otherwise) and the number of days the subject has been on the trial until an event/subject withdrawal/censoring has occurred (\texttt{time}). The column name of the site, i.e.\ the centre/hospital where the subject enrolled is optional. The column name of the event type (for example `Progressed' or `Death') is also optional, if it is not included then all events are treated as of the same type. Note, PFS or composite endpoint predictions are still possible as the event type column is not used when fitting the model or performing the predictions. 
+
+If the data set does not have a `time' column it can be derived from additional columns of the data frame by passing a list to the \texttt{time} argument, for example:
+<<>>=
+other.data <- EventData(data=event.data,
+                     subject="subject",
+                     rand.date="randDate",
+                     has.event="hasEvent",
+                     withdrawn="withdrawn",
+                     time=list(event.date="eventDate",last.date="lastDate"))
+
+#time has been calculated
+head(other.data@subject.data$time)
+@
+
+There are 5 possible entries in the list and the following logic is applied:
+\begin{itemize}
+\item \texttt{last.date}: Time = last.date - rand.date + 1 for subjects who are censored
+\item \texttt{event.date, prog.date, dth.date}: 
+Time = min(event.date, prog.date, dth.date) - rand.date + 1 for subjects who have had an event. \texttt{last.date} will be used in place of the other dates if they are all missing.
+\item \texttt{withdrawn.date}
+Time = withdrawn.date - rand.date + 1 for subjects who have withdrawn \textit{and not had an event}. \texttt{last.date} will be used in place if \texttt{withdrawn.date} is missing.
+\end{itemize}
+
+If time = 0 or set to NA then subject will be ignored when fitting the model but they will be used in the event prediction; it is assumed that they were randomized onto the study and then no further information is known. However if the argument \texttt{remove.0.time} is set to \texttt{TRUE} when calling the \texttt{EventData} function then subjects with time = 0 or NA will be removed from the data set before creating the EventData object. 
+
+A summary of the data can be displayed:
+<<sum>>=
+summary(my.data)
+@
+Note: The average recruitment assumes the recruitment period starts when the first subject was randomized and ended when the final subject was randomized onto the study (see Section \ref{recruitlab} for more information).
+
+The total number of subject years `at risk' can also be calculated using the CalculateDaysAtRisk function:
+<<atrisk>>=
+daysinyear <- 365.25
+
+CalculateDaysAtRisk(my.data)/daysinyear
+@
+
+Note for functions in the package which require conversion between days and months/years the option \texttt{eventPrediction.daysinyear} can be used to set the number of days in a year (e.g. to be 365 or 365.25) by default it is 365.25. 
+
+Further, it is sometimes useful to plot the number of events versus time to see if there are any major changes to the event rate.
+
+<<eventvstime,fig.height=5,fig.width=5>>=
+EventVsTimePlot( my.data, timeunit = "month" )
+@
+The resolution on the x-axis, set by \texttt{timeunit}, can be either in \texttt{month}, \texttt{weeks} or \texttt{quarter} of a year.
+
+\subsection{Diagnostics}
+
+In the next section we are going to fit a Weibull model to this data and we can check whether this model is appropriate by plotting $\log(-\log \hat{S}(t))$ against $\log t$ where $\hat{S(t)}$ is the KM estimate for the survival function. A Weibull survival function would generate a straight line on this diagnostic plot\footnote{As we will be extrapolating the results of the model fit, it is not the case that if this graph suggests a Weibull model is appropriate then it is automatically the case that the event prediction will be accurate.}.
+<<loglogS,fig.height=5,fig.width=5>>=
+plot(my.data)
+@
+
+
+It is important to check that the data is up to date before running the prediction algorithm (see Section \ref{outofdatelab}: Dealing with out of Date Data Section for further details). If the site argument was used when creating the \texttt{EventData} object then the package can output, for each site, the number of subjects (who have not had an event or withdrawn) who have been censored more than \texttt{ndays} before a given \texttt{analysis.date}. If the \texttt{analysis.date} is not included, a default date of the latest date for which we have any information for any subject in the study, is used.
+<<site>>=
+siteInformation(my.data, ndays=7, analysis.date="2015-11-28")
+@
+
+It is also possible to extract the subjects who have been censored before a given date:
+<<censor>>=
+censor.df <- censorInformation(my.data,censor.date="2015-11-28")
+head(censor.df)
+@
+
+We can visualize this lag between the date of the analysis and the time subjects are censored:
+<<diagplot>>=
+DiagnosticPlot(my.data,window.size=30,separate.events=TRUE)
+@
+This graph shows the number of days the subjects have been on the study until event/withdrawn/censor (y axis) and the number of days since randomization (x-axis). Ongoing patients, i.e. still in the trial, ought to be found close to the
+line y=x. If they are censored a long way in the past they will be found far from this line and data may need to be updated before event predictions are performed. 
+Two additional arguments can be passed to the \texttt{DiagnosticPlot} function:
+\begin{itemize}
+\item \texttt{analysis.date}: The reference date used for the x-axis.
+\item \texttt{window.size}: Lines are drawn at y = x-window.size and y=x-2*window.size. These can be useful when the study has a visit schedule as they highlight subjects who have missed the last one or two visits (cycles). In the example above we use a window size of 30 days.
+\item \texttt{separate.events}: Should the different event types be coloured individually, if so this should be \texttt{TRUE} otherwise should be \texttt{FALSE}. 
+\end{itemize} 
+
+Finally, it is possible to `cut' the data on a given date whereby all subjects who have left the study after a given date are censored on this given date. See the \texttt{CutData} function documentation for further details. This could also be useful if there is a lag in reporting and a more complete dataset can be obtained by cutting (censoring) the data, for example, a few weeks earlier. 
+
+Further diagnostic checks could also be carried out:
+\begin{itemize}
+\item If we currently have $x$ events, cut the data at $y<x$ events and use the prediction tool to try and predict when $x$ events occur and see how close the prediction is to reality -- see below for cutting data.
+\item Compare the results to the trial assumptions to sanity check the data/assumptions -- see below for simulating from trial assumptions.  
+\item Fit other models (for example loglogistic, lognormal) and see if any fit the data better than the Weibull model (using AIC for example).
+\end{itemize}
+
+\section{Fit the model}
+
+We next fit a Weibull survival model using the \texttt{fit} function (which calls the \texttt{survreg} function from the \texttt{survival} package). 
+<<fit>>=
+my.fit <- fit(my.data)
+
+my.fit
+@
+
+We can compare the fit to the data by plotting it. The units of time can be \texttt{"Days"} (default), \texttt{"Months"} or \texttt{"Years"} and view the number patient still at risk at various time points, i.e. the risk table (see function documentation for further details):
+<<weibullplot,fig.height=5,fig.width=7>>=
+plot(my.fit,units="Months")
+
+risk.table(my.fit,units="Days")
+@
+
+\section{Event Prediction}
+
+We use the \texttt{simulate} procedure to generate when we expect events to occur. This function uses the parameters of the fitted Weibull model to simulate the time-to-event for all subjects who have not had an event. Conditional Weibull distributions are used to take into account the time since randomization for each subject. See \cite{Carroll:2003} for further details.     
+
+<<res,fig.height=6,fig.width=6>>=
+results <- simulate(my.fit, 
+                    Nsim=500, #Number of simulations to perform  
+                    seed = 20141015) #A random seed for reproducibility
+
+summary(results)
+
+plot(results)
+@
+
+The blue dotted line shows the last event date and how many events we have up until now. The fitted Weibull model is used to simulate new events (blue line) and confidence intervals (red dashed lines). Observed dropouts (withdrawn patients) will also be shown on the graph (although in this dataset there are none).
+
+The following are arguments which can be used with the \texttt{simulate} function:
+\begin{itemize}
+\item \texttt{accrualGenerator}, \texttt{Naccrual}: See Patient Accrual section below 
+\item \texttt{data}: An EventData object, if used then instead of simulating events for the data set which was used to fit the model, this data set is used instead. See below for further details. 
+\item \texttt{Nsim}: The number of independent simulations to run 
+\item \texttt{seed}: The random seed (default NULL, R choose seed)
+\item \texttt{limit}: Controls the width of the confidence interval. Default = 0.05 which implies the CI is drawn at the 5th and 95th percentiles.
+\item \texttt{longlagsettings}: See Dealing with out of Date Data Section below.
+\item \texttt{HR}, \texttt{r}: Hazard ratio and randomization balance. Advanced options see later in the vignette for further details.
+\item \texttt{SimParams}: \textbf{Not recommended;} instead of using the estimated parameters from the Weibull model, specific rate and shape parameters can be used to simulate event times. If both \texttt{data} and this argument are used then the model fit is not required. See below for further details.
+\item \texttt{dropout} An option to include subject dropout. See below for further details.
+\end{itemize}
+
+\subsection{Perform predictions}
+
+To predict when a target level, say $900$ events will be reached we use the \texttt{predict} method and plotting the graph now shows brown dotted lines at the target level. 
+<<>>=
+
+results <- predict(results,event.pred=900)
+
+summary(results)
+ 
+plot(results)
+@
+
+Similarly to the predict from parameters part of the package, it is possible to predict multiple target events and also the expected number of events at given times.  
+<<pred>>=
+results <- predict(results,event.pred=950,time.pred=c("2017-10-10","2017-12-12"))
+
+#we do not output the number of years at risk in this summary
+summary(results,round.method="toMonths",show.at.risk=FALSE)
+
+results@event.pred.data
+results@time.pred.data
+@
+
+The (median) number of days at risk at the given time (i.e. the time column of the event.pred.data and time.pred.data) is also calculated and by default output when displaying the summary, set \texttt{show.at.risk} to \texttt{FALSE} to suppress this output.
+
+The results also stores the shape ($a$) and rate ($\lambda$) of the fitted Weibull distribution. \textbf{Note the unit of the rate is day$^{-1}$, unlike in predict from parameters where it is months$^{-1}$.} 
+<<>>=
+ results@simParams@parameters$shape
+ results@simParams@parameters$rate
+
+# Note scale = 1/rate 
+@
+
+which has a survival function:
+\begin{equation}
+S(t) = \exp(-(\lambda t)^a)
+\end{equation}
+
+
+Additional options which can be passed to the plot function:
+\begin{itemize}
+\item \texttt{show.title} If TRUE display title on graph
+\item \texttt{title} The title to be displayed on the graph, by default it is the summary text for the results
+\item \texttt{text.width} The text width to be used for the title (this option is only used if the default title is used)
+\item \texttt{show.obs} If TRUE show the (actually occurred) events on the graph. 
+\item \texttt{round.method} The rounding method used for the text of the title, if `toMonths' then dates are rounded (lower CI date is rounded to the month of 15 days earlier, median is rounded to the nearest month and upper CI date is rounded to the month of 15 days later)
+\item \texttt{show.predictions} If TRUE show the brown lines for the prediction 
+\item \texttt{pred.to.present} \textbf{Not recommended;} move the predictions which occur before the date of the last subject has an event/is censored to this date. 
+\item \texttt{xlim} The x axis limits for the graph (in months from the first recruitment date)
+\item \texttt{ylim} The y axis limits for the graph
+\item \texttt{include.dropouts} Logical, should the dropouts be displayed
+\item \texttt{legend.position} Character, position of legend for example ``bottomright" or ``top"
+\item \texttt{custom.dates} Vector of Dates, the dates to be shown on the x axis of the graph.
+\end{itemize}
+
+\section{Subject Dropout}
+
+If the study protocol has a fixed follow up period then subjects will censored if they have not had an event at the end of the follow period. This is implemented in the event Prediction package by including a followup argument when creating the eventData object. The followup argument is in units of days.
+<<>>=
+my.data.with.follow.up <- EventData(data=event.data,
+                     subject="subject",
+                     rand.date="randDate",
+                     has.event="hasEvent",
+                     withdrawn="withdrawn",
+                     time="time",
+                     site="site",
+                     followup=1095) #Note followup period
+
+fit.with.followup <- fit(my.data.with.follow.up) 
+
+@
+
+
+
+It is all possible to simulate subjects dropping out of the clinical trial using a \texttt{dropout} argument. This argument should contain a list with proportion and time and optionally shape i.e.
+\texttt{dropout=list(proportion=0.03,time=365,shape=1.2)} means in the absence of events 3\% of subjects
+will have dropped out after 365 days with a Weibull hazard rate with shape$=1.2$. If shape is not included then 
+it defaults to 1 (exponential rate). 
+
+<<>>=
+results.with.dropout <- simulate(fit.with.followup, 
+                    Nsim=500,  
+                    seed = 20141015,
+                    dropout=list(proportion=0.1,time=100,shape=1.2)) 
+@
+
+
+When plotting the graph we notice that subjects drop out (not all subjects recruited have events)
+and that not events occur after three years after last subject randomization (as all subjects have been censored at the end of the follow up period by this time).
+
+<<>>=
+plot(results.with.dropout,legend.position="right")
+@
+
+When including subject dropout, a different number of subjects have an event each simulation. Therefore, for some values of the  \texttt{event.pred} argument the upper confidence interval (and even the median) are not defined. For example:
+
+<<>>=
+summary(predict(results.with.dropout,event.pred=900))
+@
+
+\clearpage
+\section{Patient Accrual}
+
+Sometimes the recruitment has not finished and it will be necessary to simulate more patients. This can be achieved using an accrual generator function. The package contains two accrual generators and additional accrual generators can easily be implemented. 
+
+\subsection{Poisson process}
+Subjects can be recruited using a Poisson process with rate $\lambda$. This is implemented using the \texttt{Generate.PoissonAccrual} function. If we are expecting $x$ subjects a year then the rate should be specified as $x/$daysinyear. \textbf{This is the  standard definition of the rate of a Poisson process, but the reciprocal of the value used in earlier versions of this package}
+<<>>=
+N <- 300
+#start.date, the day after all known subjects have been censored/had event
+start.date <- max(my.data@subject.data$rand.date+my.data@subject.data$time)
+
+#Generate the accrual 
+my.accrual <- Generate.PoissonAccrual(start.date,rate=300/daysinyear) 
+@
+
+In order to use the requested accrual method two additional arguments are passed to the simulate function:
+
+<<accr,fig.width=5,fig.height=5>>=
+results <- simulate(my.fit, 
+                    accrualGenerator=my.accrual, #method of accrual
+                    Naccrual=N, #how many subjects to accrue 
+                    Nsim=500, seed=20141015)  
+
+results <- predict(results,event.pred=1100)
+summary(results)
+
+plot(results)
+@
+
+Note the confidence intervals on the recruitment curve when plotting the results.
+
+\subsection{Power Law Accrual $t^k/B^k$}
+Subjects can be accrued according to the function $G(t)=t^k/B^k$ where $k$ is a parameter, $t$ is the time and $B$ is the recruitment period (for more details see the predict from parameters vignette) and the \texttt{Generate.Accrual} function is used. In this case we say that we want a fixed number of patients within a time period, e.g. in a year from now we will have recruited N additional patients and the recruitment times are evenly spaced so that their cumulative distribution function is $G(t)$. 
+By setting \texttt{deterministic=FALSE} recruitment times will be stochastically sampled using G(t). 
+
+<<det,fig.width=5,fig.height=5>>=
+k <- 2
+end.date <- as.Date(start.date + daysinyear)
+
+my.accrual <- Generate.Accrual(start.date,end.date,k,deterministic=TRUE) 
+results <- simulate(my.fit, accrualGenerator=my.accrual, Naccrual=N, 
+                    Nsim=500, seed=20141015)
+summary(results)
+@
+
+It is possible to recruit subjects between \texttt{start.date} and \texttt{end.date} but assume the recruitment period started at an earlier date using the argument \texttt{rec.start.date}. In this case it is assumed subjects are accrued using $G(t)$ between \texttt{rec.start.date} and \texttt{end.date} but we sample subjects conditional on being recruited after \texttt{start.date}. See \texttt{help("Generate.Accrual")} for further details.
+This option is particularly useful if $k$ is known (or assumed from trial assumptions) and recruitment is not completed. For example if recruitment is from 1/1/15 until 1/1/16, $k=2$ and the analysis date is 1/6/15 then setting \texttt{rec.start.date} as 1/1/15, \texttt{start.date} as 1/6/15 and \texttt{end.date} as 1/1/16.
+
+\subsubsection{Estimating $k$}
+\label{recruitlab}
+Given a data set \textbf{for which subject recruitment has been completed}, a maximum likelihood estimate of $k$ can be obtained using the \texttt{estimateAccrualParameter} function. By default the recruitment period is assumed to be the period between the first and last subjects who are recruited. These default options can be changed using the \texttt{start.date} and \texttt{end.date} arguments:
+<<estimatek>>=
+estimateAccrualParameter(my.data)
+
+estimateAccrualParameter(my.data,start.date="2013-01-01",
+                                 end.date="2015-12-10")
+@
+
+If the total recruitment period is $B$ and the individual subject recruitment times are $t_1,t_2,\ldots,t_N$ (in the same units as $B$) then $$k^* = \left.\frac{1}{\log B - \frac{1}{N}\sum_{i=1}^N \log t_i}\right. $$  
+
+Internally this function works in units of days and if subject $i$ is recruited on start.date then we set $t_i=0.5$ in order to generate a meaningful estimate.
+
+\subsection{Additional Accrual Distributions}
+
+An AccrualGenerator S4 object can be created to allow additional accrual options. It has the following 3 slots:
+\begin{itemize}
+\item \texttt{f}: A function with a single argument (the number of subjects to be recruited which returns a vector of recruitment dates
+\item \texttt{model}: A string containing the name of the accrual model 
+\item \texttt{text}: The string to be used when outputting the summary of the results
+\end{itemize}
+
+For example, the following function allows subject accrual to follow a gamma distribution:
+<<extraacc>>=
+Generate.GammaAccrual <- function(start.date, rate, shape){
+  #validate input arguments
+  if(rate <= 0 || shape <= 0){
+    stop("rate and shape must be positive")
+  }
+  
+  #use the date validation routine from the eventPrediction package
+  #to allow dates in the same format as in the rest of the package
+  start.date <- eventPrediction:::FixDates(start.date)
+  
+  #function to generate the recruitment times
+  f <- function(N){
+    start.date + rgamma(n=N, shape=shape, rate=rate)
+  }
+  
+  text <- paste("a gamma distribution with rate=",round(rate,2),
+                ", shape=",round(shape,2),
+                " and start date=",start.date,".",sep="")
+  
+  new("AccrualGenerator", f=f,
+      model="Gamma distribution", text=text)
+}
+
+#Can use this function to recruit additional subjects
+gamma.accrual <- Generate.GammaAccrual(start.date, rate=1.1, shape=1.1)
+
+gamma.results <- simulate(my.fit, accrualGenerator=gamma.accrual,
+                          Naccrual=N, Nsim=500)
+
+@
+
+
+
+\section{Dealing with out of Date Data}
+\label{outofdatelab}
+The package predicts when events will occur rather than the time at which the study team is informed of their occurrences. By default the \texttt{simulate} function does not take this lag into account which can cause problems; if there has been a large gap between the last time the status of a subject was known and the time when the analysis is performed the algorithm can predict events occurring in this lag time and therefore the expected date can be in the past.
+
+
+Using a \texttt{LongLagSettings} object different methods of dealing with this problem can be investigated:
+\begin{itemize}
+\item \textbf{Treat Patients as Withdrawn from Study:} Assume if the time lag between the date of analysis (\texttt{analysis.date}) and the date at which a subject is censored is greater than a given number of days (\texttt{ndays}) then assume the subject has withdrawn.  
+<<lag1>>=
+lls <- LongLagSettings(analysis.date="2015-11-28",
+                      ndays=10,
+                      toWithdraw=TRUE)
+
+results2 <- simulate(my.fit,longlagsettings=lls, 
+                    Nsim=500, seed=20141015)
+
+@
+\item \textbf{Censor at Analysis Date:} Assume no subjects have had an event during the lag time and the study team have been informed on the analysis date:
+<<lag2>>=
+lls <- LongLagSettings(ndays=10, 
+                       toWithdraw=FALSE)
+                      #using default analysis.date (the lastest date we have
+                      #information reported for any subject in the study)
+
+results2 <- simulate(my.fit,longlagsettings=lls, 
+                    Nsim=500, seed=20141015)
+
+@
+\item \textbf{Censor at their last visit, e.g. the most recent RECIST scan}: For progression free survival data with a visit schedule: assume no subjects have had an event during the lag time and the study team have been informed of no event at the last scheduled visit. For example, if a visit schedule is 42 days and the subject would have been on the study for 170 days we censor at 4*42=168 days.
+<<lag3>>=
+lls <- LongLagSettings(ndays=10, 
+                       toWithdraw=FALSE,
+                       visitschedule=25) #visit.schedule in days
+                      
+results3 <- simulate(my.fit,longlagsettings=lls, 
+                    Nsim=500, seed=20141015)
+
+@
+\end{itemize}
+Note, this may also be useful in other studies with visit schedules (e.g. CV studies).
+
+\section{User-specified parameters}
+
+It is possible to override the fitted model parameters when running a simulation by using the \texttt{SimParams} argument. This parameter requires a \texttt{FromDataSimParam} object which can be created by calling the \texttt{FromDataParam} with \texttt{type="weibull"} and the desired rate (in units of days$^{-1}$) and shape:    
+
+<<>>=
+sim <- simulate(my.fit,
+                SimParams=FromDataParam(type="weibull",rate=0.00784812,shape=1),
+                Nsim=500)
+@
+
+\section{Using only subject recruitment times}
+
+By using the \texttt{data} argument with the \texttt{simulate} function it is possible to ignore all events and only use the study recruitment times to generate event predictions. This can be used to compare how the event predictions change when the recruitment pattern is different from the pattern expected in the study assumptions. The function \texttt{OnlyUseRecTimes} creates a new EventData object with time=0 for all subjects (and no subjects have withdrawn, had event or were censored at end of follow up period). 
+
+<<>>=
+#Make a copy of the EventData with time
+#=0 for all subjects
+my.data2 <- OnlyUseRecTimes(my.data)
+
+#simulate only using the recruitment times
+only.recruit.results <- simulate(my.fit,data=my.data2,Nsim=500)
+@
+
+When only using subject recruitment times two further arguments can be used with the \texttt{simulate} function, \texttt{HR} and \texttt{r}. These options allow studies with two arms to be investigated: if there are $N$ subjects in the trial then for each simulation $N/(r+1)$ subjects have event times simulated with the rate parameter from the model fit -- these are the control group. The remaining subjects, the active group, have an event time simulated using a rate parameter chosen such that the trial will have the hazard ratio \texttt{HR}.
+
+In the example code below half of subjects will be sampled using rate and shape parameters derived from the model fit (say $\lambda$ and $a$) whereas the other half will be sampled with the rate $=\lambda(0.75)^{(1/a)}$ and shape$=a$.
+<<>>=
+test.study.assumptions <- simulate(my.fit,data=my.data2,Nsim=500,
+                                   HR=0.75,r=1)
+
+@
+
+By combining the \texttt{data} argument and the \texttt{SimParams}, it is possible to combine protocol assumptions with recruitment data and in this case no model fit is needed. Suppose the control arm median time-to-event was 3 months and the Weibull shape parameter is 1.1:
+<<>>=
+shape <- 1.1
+ctrl.median <- 3
+
+#rate in units of months^-1
+rate <- log(2)^(1/shape)/ctrl.median
+
+#rate in unit of days^-1
+rate <- rate*12/365
+
+#perform prediction
+test.study.assumptions <- simulate(data=my.data2,Nsim=500,
+                            HR=0.75,r=1,
+                            SimParams=FromDataParam(type="weibull",rate=rate,shape=shape))
+
+#Note in this case we can skip the creation of my.fit and use simulate directly
+#with the EventData object (see section below)
+test.study.assumptions <- simulate(data=my.data2,Nsim=500,
+                            HR=0.75,r=1,
+                            SimParams=FromDataParam(type="weibull",rate=rate,shape=shape))
+
+@
+
+\section{Simulating without data}
+
+By calling the \texttt{simulate} function with an empty \texttt{EventData} data frame it is possible 
+to simulate a trial for which no subjects have currently been recruited, essentially simulating the 
+theoretical results found in the from Parameters part of the package.
+
+<<param>>=
+#create single arm study see from Parameters vignette
+study <- SingleArmStudy(N=800,
+             study.duration=36,
+             ctrl.median=3,
+             k=0.5,
+             shape=1.1,
+             acc.period=10)
+
+#perform prediction
+from.param <- predict(study,step.size=0.1)
+
+#calculate the rate of the Weibull distribution used  
+rate <- log(2)^(1/1.1)/3
+#convert rate into units used in from data part of package
+rate <- rate*12/daysinyear
+  
+#create an empty EventData object
+empty.event.data <- EmptyEventData()
+
+#create appropriate accrual generator  
+my.a <- Generate.Accrual(start.date="2015-01-01",
+                         end.date="2015-11-01",
+                         k=0.5,deterministic=FALSE)
+
+#perform the simulation, with the first argument the
+#EventData object (instead of applying my.fit <- fit(my.data) first)
+sim <- simulate(data=empty.event.data,
+                Naccrual=800,
+                accrualGenerator=my.a,
+                SimParams=FromDataParam(type="weibull",rate=rate,shape=shape),
+                Nsim=500)
+
+##Could compare the two methods:###########################
+#rec <- as.numeric(sim@recQuantiles@median-as.Date("2015-01-01"))
+#plot(rec,1:length(rec),type="l",xlim=c(0,900),xlab="Time",ylab="N")
+#lines(from.param@grid$time*daysinyear/12,from.param@grid$recruit.tot,col="red")
+  
+#q <- as.numeric(sim@eventQuantiles@median-as.Date("2015-01-01"))
+#lines(q,1:length(q),col="black")
+#lines(from.param@grid$time*daysinyear/12,from.param@grid$events.tot,col="red")
+
+@
+
+\section{Loglogistic distribution}
+
+It is also possible to use the event prediction package with loglogistic models. The survival function is given by
+$$S(t) = 1 - \frac{1}{1+(x\lambda)^{-a}}$$ where $\lambda > 0$ is the rate parameter and $a > 0$ is the shape parameter.
+
+First we fit the model:
+<<>>=
+#Fit the model
+llog.fit <- fit(my.data,dist="loglogistic")
+
+#Plot the KM curve, note for this example the fit is rather poor
+plot(llog.fit)
+@
+
+Then we perform the simulation and prediction. Note it is not possible to use the \texttt{HR} argument with the loglogistic distribution as this is not a proportional hazards model.
+<<>>=
+#Perform the simulation
+llog.result <- simulate(llog.fit,Nsim=500)
+#could also use SimParams=FromDataParam(type="loglogistic",rate=rate,shape=shape) 
+#argument to specify own parameters
+
+#perform prediction
+llog.result <- predict(llog.result,event.pred=900)
+
+#Plot the results
+plot(llog.result,xlim=c(0,100))
+@
+It is also possible to add other survival distributions as long as it is possible to derive a closed expression for the remaining life time conditioned on the analysis date. See \texttt{help(FromDataSimParam.class)} for further details. 
+
+
+\section*{Appendix}
+Additional documentation can be found at \url{http://www.seml.astrazeneca.net/~raac/event-prediction/Event-Predictions.pdf}
+
+\bibliographystyle{plain}
+\bibliography{eventPred}
+
+\end{document}
+

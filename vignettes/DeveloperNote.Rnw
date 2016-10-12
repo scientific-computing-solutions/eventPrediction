@@ -1,0 +1,31 @@
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{fullpage}
+\title{Note to Developers}
+\author{Nik Burkoff}
+%\VignetteIndexEntry{Note to developers}
+%\VignetteEngine{knitr::knitr} 
+
+\begin{document}
+
+<<include=FALSE>>=
+library(knitr)
+opts_chunk$set(
+concordance=TRUE
+)
+@
+
+\maketitle
+
+\section{System Tests}
+
+The function \texttt{eventPrediction:::compare.param.data} creates a graph using both the from data (black) and from parameters (red) methods - when developing the package it should be checked that the red and black curves match. The parameters of the function are hard coded - in the future it may be deemed necessary to allow arguments (e.g. $k$) to be passed into the function.
+
+Similarly, the functions \texttt{eventPrediction:::conditional\_Weibull\_test} and \\
+\texttt{eventPrediction:::conditional\_loglogistic\_test} tests that the from Data part of the package is sampling the conditional  distributions correctly. The red and black curves should match.
+
+In both cases the lines have been calculated stochastically so it is not the case that the results will be identical.
+
+\end{document}
