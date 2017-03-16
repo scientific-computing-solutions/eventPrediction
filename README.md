@@ -1,6 +1,6 @@
 # eventPrediction
 
-[![Build Status](https://travis-ci.org/scientific-computing-solutions/eventPrediction.svg?branch=forCRAN)](https://travis-ci.org/scientific-computing-solutions/eventPrediction)
+[![Build Status](https://travis-ci.org/scientific-computing-solutions/eventPrediction.svg?branch=master)](https://travis-ci.org/scientific-computing-solutions/eventPrediction)
 [![CRAN_Status_Badge](http://www.r-pkg.org/badges/version/eventPrediction)](https://cran.r-project.org/package=eventPrediction)
 [![Coverage Status](https://coveralls.io/repos/scientific-computing-solutions/eventPrediction/badge.svg?branch=forCRAN&service=github)](https://coveralls.io/github/scientific-computing-solutions/eventPrediction?branch=forCRAN)
 [![AppVeyor Build Status](https://ci.appveyor.com/api/projects/status/github/scientific-computing-solutions/eventPrediction?branch=forCRAN&svg=true)](https://ci.appveyor.com/project/scientific-computing-solutions/eventPrediction)
