@@ -500,3 +500,39 @@ test_that("EmptyEventData",{
   expect_error(EmptyEventData(followup=c(1,2,3)))
 })
 
+
+
+test_that("SubgroupPlotting",{ 
+  my.data <- EventData( data=event.data,
+                        subject="subject",
+                        rand.date="randDate",
+                        has.event="hasEvent",
+                        withdrawn="withdrawn",
+                        subgroup = "arm",
+                        time="time" )
+
+  N <- nrow(my.data@subject.data)
+  
+  # Expect warning (Single level)
+  expect_warning( plot( my.data, by.subgroup=TRUE) )
+
+  
+  # Should give two parallel but different interceps
+  my.data@subject.data$subgroup[1:(N/2)] = 2
+  expect_silent( plot( my.data, by.subgroup=TRUE) )
+  
+  # Should two lines with roughly same interface
+  my.data@subject.data$subgroup <- round( runif( N ), 0 ) 
+  expect_silent( plot( my.data, by.subgroup=TRUE) )
+  
+  # Expect warning (Subgroup needs to be defined)
+  my.data@subject.data$subgroup[1] <- NA
+  expect_warning( plot( my.data, by.subgroup=TRUE ) )
+  
+  # Expect warning (Subgroup needs to be defined)
+  my.data@subject.data$subgroup <- NA
+  expect_warning( plot( my.data, by.subgroup=TRUE) )
+  
+  # Should not warn
+  expect_silent( plot( my.data ) )
+})

@@ -70,7 +70,7 @@ checkEventData <- function(object){
   
 ##' Class representing data to use for new predictions
 ##' @slot subject.data a data frame with 6 columns
-##' "subject", "rand.date", "has.event", "withdrawn", "censored.at.follow.up" and "time" and "site" and "event.type"
+##' "subject", "rand.date", "has.event", "withdrawn", "censored.at.follow.up" and "time" and "site" and "subgroup" and "event.type"
 ##' see vignette and \code{EventData} for further details. 
 ##' @slot followup A numeric value for the fixed follow up period a subject
 ##' is followed. This is in days. If there is no fixed followup period then 
@@ -101,6 +101,7 @@ setClass("EventData",
 ##' In this case the package will attempt to derive the time column 
 ##' See the vignette and then eventPrediction:::AddTimeColumn for further details
 ##' @param site optional column for subject site
+##' @param subgroup optional column for subgroup. Used by eventTools.
 ##' @param event.type optional column for the event type (e.g. unstable angina) if not included then `Had Event' will be used 
 ##' @param remove.0.time logical, if TRUE then all subjects with time = NA or 0 are removed from the
 ##' data set and not included in the object. If FALSE then they are included in the simulation (but not in the model fitting)
@@ -109,7 +110,7 @@ setClass("EventData",
 ##' Inf should be used
 ##' @return An \code{EventData} object
 ##' @export
-EventData <- function(data,subject,rand.date,has.event,withdrawn,time,site=NULL,event.type=NULL,remove.0.time=FALSE,followup=Inf){
+EventData <- function(data,subject,rand.date,has.event,withdrawn,time,site=NULL,subgroup=NULL,event.type=NULL,remove.0.time=FALSE,followup=Inf){
   
   #set time argument
   arg <- if(!is.list(time))  time else NULL
@@ -129,6 +130,7 @@ EventData <- function(data,subject,rand.date,has.event,withdrawn,time,site=NULL,
   data[,rand.date] <- if(nrow(data)>0) FixDates(data[,rand.date]) else data[,rand.date]
   time <- if(!is.list(time))  data[,time] else AddTimeColumn(data,rand.date,has.event,withdrawn,subject,time)
   site <- if(is.null(site)) rep(NA,nrow(data)) else data[,site] 
+  subgroup <- if(is.null(subgroup)) rep(NA,nrow(data)) else data[,subgroup] 
   
   if(is.null(event.type)) 
     event.type <- ifelse(data[,has.event],"Has Event",factor(NA))
@@ -148,6 +150,7 @@ EventData <- function(data,subject,rand.date,has.event,withdrawn,time,site=NULL,
     has.event=data[,has.event],
     withdrawn=data[,withdrawn],
     site=site,
+    subgroup=subgroup,
     event.type=event.type
   )
   
@@ -311,30 +314,48 @@ setMethod("fit","EventData",function(object,dist="weibull"){
 
 ##' @rdname plot-methods
 ##' @name plot
+##' @param by.subgroup Plot separate lines per subgroup
 ##' @aliases plot,EventData,missing-method
 ##' @export
 setMethod( "plot",
   signature( x="EventData", y="missing" ),
-  function(x, xlab="log(t)", ylab="log(-log(S(t)))", main="", ...) {
+  function(x, xlab="log(t)", ylab="log(-log(S(t)))", 
+           main="", by.subgroup = FALSE, ...) {
     
     if(nrow(x@subject.data)==0)stop("Empty data frame!")
     if(sum(x@subject.data$has.event)==0){
       stop("Cannot fit a model to a dataset with no events")
     }
     
-    model <- survfit(Surv(time, has.event) ~ 1, data=x@subject.data,...)
+
+    subgroups <- as.factor( x@subject.data$subgroup )
+    subgr <- levels( subgroups )
+    if( by.subgroup && !any( is.na(subgroups) ) && length( subgr )==2 ) {
+      data.1 <- x@subject.data[ x@subject.data$subgroup==subgr[1], ]
+      data.2 <- x@subject.data[ x@subject.data$subgroup==subgr[2], ]
+      model.1 <- survfit(Surv(time, has.event) ~ 1, data=data.1,...)
+      model.2 <- survfit(Surv(time, has.event) ~ 1, data=data.2,...)
       
-    res <- data.frame(t=model$time, s=model$surv)
-    res <- res[res$t>0 & res$s>0 & res$s<1,]
-    
-    df <- data.frame(x=log(res$t),y=log(-log(res$s)))
-    
-    p <- ggplot(df, aes_string(x="x", y="y")) + geom_point() +
+      res.1 <- data.frame(t=model.1$time, s=model.1$surv, subgroup=subgr[1] )
+      res.2 <- data.frame(t=model.2$time, s=model.2$surv, subgroup=subgr[2] )
+      res <- rbind( res.1, res.2 )
+      res <- res[res$t>0 & res$s>0 & res$s<1,]
+      df <- data.frame(x=log(res$t),y=log(-log(res$s)),Subgroup=res$subgroup)
+      p <- ggplot(df, aes_string(x="x", y="y", group="Subgroup", colour="Subgroup")) + 
+        scale_colour_manual(values= c( "red", "blue" )) 
+    } else {
+      if( by.subgroup ){ warning( "Cannot plot by subgroup, please check that 2-levels and no NAs" )}
+      model <- survfit(Surv(time, has.event) ~ 1, data=x@subject.data,...)
+      res <- data.frame(t=model$time, s=model$surv)
+      res <- res[res$t>0 & res$s>0 & res$s<1,]
+      df <- data.frame(x=log(res$t),y=log(-log(res$s)))
+      p <- ggplot(df, aes_string(x="x", y="y")) 
+    }
+    p + geom_point() +
       stat_smooth(method="lm", se=FALSE, color="red", size=1 ) +
       xlab(xlab) + ylab(ylab) +
       ggtitle(main) + theme_bw() +
       theme(panel.grid.minor = element_line(colour="gray", size=0.5))
-    p
   }
 )
 
@@ -418,6 +439,7 @@ setMethod("CutData","EventData",function(object,date){
     withdrawn="withdrawn",
     time="time",
     site="site",
+    subgroup="subgroup",
     event.type="event.type",
     followup=object@followup
   )
